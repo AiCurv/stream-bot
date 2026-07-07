@@ -27,11 +27,11 @@ jobs:
       - name: Write payload to file
         env:
           PAYLOAD: ${{ toJSON(github.event.client_payload) }}
-          ACTION: ${{ github.event.action }}
         run: echo "$PAYLOAD" > payload.json
 
       - name: Run pipeline
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+          ACTION: ${{ github.event.action }}
         run: node run.js "$ACTION"
