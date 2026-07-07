@@ -68,23 +68,19 @@ function decodeBencode(buf) {
 /**
  * Parse .torrent Buffer and extract metadata for the file picker.
  */
-function parseTorrentMeta(torrentBuf) {
+async function parseTorrentMeta(torrentBuf) {
   const d = decodeBencode(torrentBuf);
   const info = d.info;
   if (!info) return null;
 
   let name = (info.name || d.name || "Unknown").toString();
-  let infoHash;
+  let infoHash = "";
 
-  // Compute info hash using Node crypto
+  // Compute info hash
   try {
     const { createHash } = await import("crypto");
-    infoHash = createHash("sha1").update(torrentBuf.slice(
-      torrentBuf.indexOf(bencodeEncode(info))
-    )).digest("hex").toUpperCase();
-  } catch (_) {
-    infoHash = "";
-  }
+    infoHash = createHash("sha1").update(bencodeEncode(info)).digest("hex").toUpperCase();
+  } catch (_) {}
 
   let files;
   if (info.files && Array.isArray(info.files)) {
