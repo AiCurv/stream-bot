@@ -199,7 +199,13 @@ async function sendTelegram(method, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  return response.json();
+  const data = await response.json();
+  if (!data.ok) {
+    console.error("[telegram] API error:", data.error_code, data.description);
+  } else {
+    console.log("[telegram]", method, "ok");
+  }
+  return data;
 }
 
 function getTrackers() {

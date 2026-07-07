@@ -24,6 +24,16 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Telegram connectivity check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          echo "Token length: ${#TELEGRAM_BOT_TOKEN}"
+          RESP=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")
+          echo "getMe response: $RESP"
+          OK=$(echo "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).ok))")
+          echo "Telegram API reachable: $OK"
+
       - name: Write payload to file
         env:
           PAYLOAD: ${{ toJSON(github.event.client_payload) }}
