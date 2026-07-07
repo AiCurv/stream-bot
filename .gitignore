@@ -4,3 +4,5 @@ upload/
 skills/
 download/
 tool-results/
+.vercel
+.env*
