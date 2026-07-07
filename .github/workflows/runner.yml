@@ -19,65 +19,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install dependencies
         run: npm install
 
-      - name: Metadata Scrape
-        if: github.event.action == 'metadata_scrape'
+      - name: Write payload to file
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
-        run: |
-          node -e "
-            import('./stream_engine.js').then(async mod => {
-              const p = ${{ toJSON(github.event.client_payload) }};
-              try {
-                await mod.scrapeMetadata(p.magnet, p.chat_id);
-              } catch(e) {
-                console.error(e);
-              }
-              process.exit(0);
-            });
-          "
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          ACTION: ${{ github.event.action }}
+        run: echo "$PAYLOAD" > payload.json
 
-      - name: Stream Process
-        if: github.event.action == 'stream_process'
+      - name: Run pipeline
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
-        run: |
-          node -e "
-            import('./stream_engine.js').then(async mod => {
-              const p = ${{ toJSON(github.event.client_payload) }};
-              try {
-                if (p.mode === 'playlist') {
-                  await mod.buildPlaylist(p.magnet, p.chat_id);
-                } else {
-                  await mod.processStream(p.magnet, p.file_index, p.chat_id, p.host);
-                }
-              } catch(e) {
-                console.error(e);
-              }
-              process.exit(0);
-            });
-          "
-
-      - name: Batch Process
-        if: github.event.action == 'batch_process'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
-        run: |
-          node -e "
-            import('./services/playlist.js').then(async mod => {
-              const p = ${{ toJSON(github.event.client_payload) }};
-              try {
-                await mod.processBatch(p.links, p.batch_type, p.chat_id);
-              } catch(e) {
-                console.error(e);
-              }
-              process.exit(0);
-            });
-          "
+        run: node run.js "$ACTION"

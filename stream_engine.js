@@ -304,11 +304,31 @@ function formatFileSize(bytes) {
 
 function getTrackers() {
   return [
+    // WSS trackers (most reliable on CI/GitHub Actions)
     "wss://tracker.openwebtorrent.com",
+    "wss://tracker.btorrent.xyz",
+    "wss://tracker.fastcast.nz",
+    // High-reliability UDP trackers
     "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
     "udp://tracker.openbittorrent.com:6969/announce",
-    "udp://opentracker.i2p.rocks:6969/announce",
     "udp://tracker.torrent.eu.org:451/announce",
-    "udp://exodus.desync.com:6969/announce"
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://tracker-udp.gbitt.info:80/announce",
+    "udp://public.popcorn-tracker.org:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://retracker.lanta-net.ru:2710/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.pirateparty.gr:6969/announce",
+    "udp://tracker.coppersurfer.tk:6969/announce",
+    "udp://p4p.arenabg.com:1337/announce",
+    // HTTP trackers (fallback, work everywhere)
+    "http://tracker.openbittorrent.com:80/announce",
+    "http://openbittorrent.com:80/announce",
+    "http://tracker.openbittorrent.com/announce",
+    "http://tracker1.bt7z.com:8080/announce",
+    "http://tracker.torrent.eu.org/announce"
   ];
 }
