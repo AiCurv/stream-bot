@@ -6,3 +6,4 @@ download/
 tool-results/
 .vercel
 .env*
+package-lock.json

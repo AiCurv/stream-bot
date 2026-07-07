@@ -4,7 +4,6 @@
 
 import { execSync } from "child_process";
 import { Readable } from "stream";
-import parseTorrent from "parse-torrent";
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./pixeldrain.js";
 
@@ -139,8 +138,6 @@ async function streamMagnetToPixeldrain(magnet, index, chatId) {
             }
           }
         } catch (_) {}
-          }
-        }
       }
     } catch (_) {}
   }

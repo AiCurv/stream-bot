@@ -318,8 +318,9 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
             const buf = Buffer.from(await resp.arrayBuffer());
             if (buf.length > 0 && buf[0] === 0x64) {
               console.log("[stream] Using cached .torrent");
-            torrentInput = buf;
-            break;
+              torrentInput = buf;
+              break;
+            }
           }
         }
       }
