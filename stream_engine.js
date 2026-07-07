@@ -122,7 +122,17 @@ function bencodeEncode(obj) {
 }
 
 /**
- * Fetch .torrent file bytes from a torrent cache. Returns Buffer or null.
+ * Extract infoHash from a magnet URI.
+ */
+function extractHash(magnet) {
+  const m40 = magnet.match(/btih:([A-Fa-f0-9]{40})/i);
+  if (m40) return m40[1].toUpperCase();
+  const mAny = magnet.match(/btih:([A-Za-z0-9]+)/i);
+  return mAny ? mAny[1].toUpperCase() : null;
+}
+
+/**
+ * Fetch .torrent file bytes from a torrent cache. Returns parsed metadata or null.
  */
 async function fetchCachedTorrent(hash) {
   for (const tpl of TORRENT_CACHE_URLS) {
