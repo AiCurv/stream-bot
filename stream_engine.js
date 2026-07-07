@@ -1,7 +1,9 @@
 // stream_engine.js — Zero-disk torrent streaming engine
-// Runs on GitHub Actions ubuntu-latest (Node.js v20)
+// Runs on GitHub Actions ubuntu-latest (Node.js v22)
 // Uses webtorrent to create in-memory read streams piped directly to Pixeldrain
 // 45-second metadata timeout with graceful exit (code 0)
+
+import { execSync } from "child_process";
 
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./services/pixeldrain.js";
@@ -287,18 +289,23 @@ export async function buildPlaylist(magnet, chatId) {
 
 async function sendTelegram(method, payload) {
   const url = "https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/" + method;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!data.ok) {
-    console.error("[telegram] API error:", data.error_code, data.description);
-  } else {
-    console.log("[telegram]", method, "ok");
+  const body = JSON.stringify(payload);
+  try {
+    const result = execSync(
+      'curl -s -X POST -H "Content-Type: application/json" -d \'' + body.replace(/'/g, "'\\''") + '\' "' + url + '"',
+      { timeout: 15000, encoding: "utf-8" }
+    );
+    const data = JSON.parse(result);
+    if (data.ok) {
+      console.log("[telegram]", method, "ok");
+    } else {
+      console.error("[telegram] API error:", data.error_code, data.description);
+    }
+    return data;
+  } catch (e) {
+    console.error("[telegram] curl failed:", e.message.slice(0, 200));
+    return { ok: false, error: e.message };
   }
-  return data;
 }
 
 function formatFileSize(bytes) {

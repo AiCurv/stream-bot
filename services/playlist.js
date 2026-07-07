@@ -2,6 +2,7 @@
 // Handles multi-link batch processing: magnet arrays and direct video URL arrays
 // Streams each item to Pixeldrain zero-disk, then compiles an Extended M3U8
 
+import { execSync } from "child_process";
 import { Readable } from "stream";
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./pixeldrain.js";
@@ -194,18 +195,23 @@ function extractFileName(url) {
 
 async function sendTelegram(method, payload) {
   const url = "https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/" + method;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!data.ok) {
-    console.error("[telegram] API error:", data.error_code, data.description);
-  } else {
-    console.log("[telegram]", method, "ok");
+  const body = JSON.stringify(payload);
+  try {
+    const result = execSync(
+      'curl -s -X POST -H "Content-Type: application/json" -d \'' + body.replace(/'/g, "'\\''") + '\' "' + url + '"',
+      { timeout: 15000, encoding: "utf-8" }
+    );
+    const data = JSON.parse(result);
+    if (data.ok) {
+      console.log("[telegram]", method, "ok");
+    } else {
+      console.error("[telegram] API error:", data.error_code, data.description);
+    }
+    return data;
+  } catch (e) {
+    console.error("[telegram] curl failed:", e.message.slice(0, 200));
+    return { ok: false, error: e.message };
   }
-  return data;
 }
 
 function getTrackers() {
