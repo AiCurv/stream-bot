@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   try {
     const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID;
     const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    const GITHUB_TOKEN = process.env.PAT_TOKEN;
     const GITHUB_USERNAME = process.env.GITHUB_USERNAME || "aicurv";
     const GITHUB_REPO = process.env.GITHUB_REPO_NAME || "stream-bot";
 
