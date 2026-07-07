@@ -4,7 +4,6 @@
 // Falls back to itorrents.org for metadata when DHT fails on restricted networks
 
 import { execSync } from "child_process";
-import parseTorrent from "parse-torrent";
 
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./services/pixeldrain.js";
@@ -19,15 +18,111 @@ const TORRENT_CACHE_URLS = [
 ];
 
 /**
- * Extract infoHash from a magnet URI.
+ * Minimal bencode decoder that handles Buffer values correctly.
  */
-function extractHash(magnet) {
-  const match = magnet.match(/btih:([A-Fa-f0-9]+)/i);
-  if (!match) return null;
-  const h = match[1].toUpperCase();
-  // Return as-is if 40 chars, otherwise try base32 decode
-  if (h.length === 40) return h;
-  try { return parseTorrent.toHexHash(h); } catch (_) { return h; }
+function decodeBencode(buf) {
+  let pos = 0;
+  function read() {
+    const c = buf[pos];
+    if (c === 0x64) { // dict
+      pos++;
+      const obj = {};
+      while (buf[pos] !== 0x65) {
+        const key = read().toString();
+        obj[key] = read();
+      }
+      pos++; // skip 'e'
+      return obj;
+    }
+    if (c === 0x6C) { // list
+      pos++;
+      const arr = [];
+      while (buf[pos] !== 0x65) arr.push(read());
+      pos++;
+      return arr;
+    }
+    if (c >= 0x30 && c <= 0x39) { // number (bencode integer)
+      const end = buf.indexOf(0x65, pos);
+      const n = parseInt(buf.slice(pos, end).toString());
+      pos = end + 1;
+      return n;
+    }
+    if (c === 0x69) { // integer prefix
+      pos++;
+      const end = buf.indexOf(0x65, pos);
+      const n = parseInt(buf.slice(pos, end).toString());
+      pos = end + 1;
+      return n;
+    }
+    // string: <length>:<bytes>
+    const colon = buf.indexOf(0x3A, pos);
+    const len = parseInt(buf.slice(pos, colon).toString());
+    pos = colon + 1;
+    const str = buf.slice(pos, pos + len);
+    pos += len;
+    return str;
+  }
+  return read();
+}
+
+/**
+ * Parse .torrent Buffer and extract metadata for the file picker.
+ */
+function parseTorrentMeta(torrentBuf) {
+  const d = decodeBencode(torrentBuf);
+  const info = d.info;
+  if (!info) return null;
+
+  let name = (info.name || d.name || "Unknown").toString();
+  let infoHash;
+
+  // Compute info hash using Node crypto
+  try {
+    const { createHash } = await import("crypto");
+    infoHash = createHash("sha1").update(torrentBuf.slice(
+      torrentBuf.indexOf(bencodeEncode(info))
+    )).digest("hex").toUpperCase();
+  } catch (_) {
+    infoHash = "";
+  }
+
+  let files;
+  if (info.files && Array.isArray(info.files)) {
+    files = info.files.map((f, idx) => ({
+      name: Array.isArray(f.path) ? f.path.map(p => p.toString()).join("/") : (f.name || "file_" + idx).toString(),
+      length: Number(f.length || 0),
+      index: idx
+    }));
+  } else {
+    files = [{ name: name, length: Number(info.length || 0), index: 0 }];
+  }
+
+  return { name, infoHash, files };
+}
+
+/**
+ * Bencode encoder (minimal, for info dict hashing)
+ */
+function bencodeEncode(obj) {
+  if (Buffer.isBuffer(obj)) return obj;
+  if (typeof obj === "string") return Buffer.from(obj.length + ":" + obj);
+  if (typeof obj === "number") return Buffer.from("i" + obj + "e");
+  if (Array.isArray(obj)) {
+    const parts = [Buffer.from("l")];
+    for (const item of obj) parts.push(bencodeEncode(item));
+    parts.push(Buffer.from("e"));
+    return Buffer.concat(parts);
+  }
+  if (typeof obj === "object") {
+    const parts = [Buffer.from("d")];
+    for (const key of Object.keys(obj)) {
+      parts.push(bencodeEncode(key));
+      parts.push(bencodeEncode(obj[key]));
+    }
+    parts.push(Buffer.from("e"));
+    return Buffer.concat(parts);
+  }
+  return Buffer.alloc(0);
 }
 
 /**
@@ -45,7 +140,11 @@ async function fetchCachedTorrent(hash) {
         const buf = Buffer.from(await resp.arrayBuffer());
         if (buf.length > 0 && buf[0] === 0x64) { // bencode starts with 'd'
           console.log("[cache] Got .torrent from", new URL(url).hostname, buf.length, "bytes");
-          return buf;
+          const parsed = parseTorrentMeta(buf);
+          if (parsed && parsed.files && parsed.files.length > 0) {
+            return parsed;
+          }
+          console.error("[cache] Parse returned:", parsed ? parsed.files?.length + " files" : "null");
         }
       }
     } catch (_) {}
@@ -112,9 +211,8 @@ export async function scrapeMetadata(magnet, chatId) {
   // --- STRATEGY 1: Fetch from torrent cache (fast, works on restricted networks) ---
   if (hash) {
     try {
-      const torrentBuf = await fetchCachedTorrent(hash);
-      if (torrentBuf) {
-        const parsed = parseTorrent(torrentBuf);
+      const parsed = await fetchCachedTorrent(hash);
+      if (parsed) {
         console.log("[scrape] Cache hit:", parsed.name, parsed.files.length, "files");
         await presentTorrentMetadata(parsed, chatId);
         return;
@@ -200,10 +298,17 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
   let torrentInput = magnet;
   if (hash) {
     try {
-      const buf = await fetchCachedTorrent(hash);
-      if (buf) {
-        console.log("[stream] Using cached .torrent for faster resolution");
-        torrentInput = buf;
+      for (const tpl of TORRENT_CACHE_URLS) {
+        const url = tpl.replace("{hash}", hash);
+        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (buf.length > 0 && buf[0] === 0x64) {
+            console.log("[stream] Using cached .torrent");
+            torrentInput = buf;
+            break;
+          }
+        }
       }
     } catch (_) {}
   }
@@ -301,10 +406,17 @@ export async function buildPlaylist(magnet, chatId) {
   let torrentInput = magnet;
   if (hash) {
     try {
-      const buf = await fetchCachedTorrent(hash);
-      if (buf) {
-        console.log("[playlist] Using cached .torrent");
-        torrentInput = buf;
+      for (const tpl of TORRENT_CACHE_URLS) {
+        const url = tpl.replace("{hash}", hash);
+        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (buf.length > 0 && buf[0] === 0x64) {
+            console.log("[playlist] Using cached .torrent");
+            torrentInput = buf;
+            break;
+          }
+        }
       }
     } catch (_) {}
   }
