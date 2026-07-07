@@ -1,9 +1,10 @@
 // stream_engine.js — Zero-disk torrent streaming engine
 // Runs on GitHub Actions ubuntu-latest (Node.js v22)
 // Uses webtorrent to create in-memory read streams piped directly to Pixeldrain
-// 45-second metadata timeout with graceful exit (code 0)
+// Falls back to itorrents.org for metadata when DHT fails on restricted networks
 
 import { execSync } from "child_process";
+import parseTorrent from "parse-torrent";
 
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./services/pixeldrain.js";
@@ -12,13 +13,108 @@ const METADATA_TIMEOUT_MS = 45000;
 const STREAM_TIMEOUT_MS = 600000;
 const PLAYLIST_TIMEOUT_MS = 1800000;
 
+const TORRENT_CACHE_URLS = [
+  "http://itorrents.org/torrent/{hash}.torrent",
+  "https://cache.torrentfavorites.com/torrent/{hash}.torrent"
+];
+
+/**
+ * Extract infoHash from a magnet URI.
+ */
+function extractHash(magnet) {
+  const match = magnet.match(/btih:([A-Fa-f0-9]{40})/i);
+  if (match) return match[1].toUpperCase();
+  // Try base32
+  const b32 = magnet.match(/btih:([A-Z2-7]+)/i);
+  if (b32) {
+    try { return parseTorrent.toHexHash(b32[1]); } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * Fetch .torrent file bytes from a torrent cache. Returns Buffer or null.
+ */
+async function fetchCachedTorrent(hash) {
+  for (const tpl of TORRENT_CACHE_URLS) {
+    try {
+      const url = tpl.replace("{hash}", hash);
+      const resp = await fetch(url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(10000)
+      });
+      if (resp.ok) {
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length > 0 && buf[0] === 0x64) { // bencode starts with 'd'
+          console.log("[cache] Got .torrent from", new URL(url).hostname, buf.length, "bytes");
+          return buf;
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * Parse a .torrent Buffer and send the file list to Telegram.
+ */
+async function presentTorrentMetadata(parsed, chatId) {
+  const files = (parsed.files || []).map((f, idx) => ({
+    name: (f.path || []).join("/"),
+    length: f.length,
+    index: idx
+  }));
+
+  const inlineKeyboard = files.slice(0, 30).map((f) => [{
+    text: formatFileSize(f.length) + " \u2014 " + f.name,
+    callback_data: "STREAM:" + parsed.infoHash + ":" + f.index + ":pixeldrain"
+  }]);
+
+  if (files.length > 1) {
+    inlineKeyboard.push([{
+      text: "Build Full Playlist (M3U)",
+      callback_data: "BUILD_PLAYLIST:" + parsed.infoHash + ":pixeldrain"
+    }]);
+  }
+
+  await sendTelegram("sendMessage", {
+    chat_id: chatId,
+    text: "Found " + files.length + " file(s) in torrent:\n" +
+          "Name: " + (parsed.name || "Unknown") + "\n" +
+          "Size: " + formatFileSize(parsed.length) + "\n\n" +
+          "Select a file to stream:",
+    reply_markup: { inline_keyboard: inlineKeyboard }
+  });
+
+  return { infoHash: parsed.infoHash, files };
+}
+
 /**
  * Scrape metadata from a magnet/torrent and reply with an inline keyboard.
- * 45-second hard timeout — notifies user gracefully on DHT failure, exits 0.
+ * Strategy: try torrent cache first (1-2s), then fall back to webtorrent DHT (45s).
  */
 export async function scrapeMetadata(magnet, chatId) {
-  let settled = false;
+  const hash = extractHash(magnet);
+  console.log("[scrape] Hash:", hash);
 
+  // --- STRATEGY 1: Fetch from torrent cache (fast, works on restricted networks) ---
+  if (hash) {
+    try {
+      const torrentBuf = await fetchCachedTorrent(hash);
+      if (torrentBuf) {
+        const parsed = parseTorrent(torrentBuf);
+        console.log("[scrape] Cache hit:", parsed.name, parsed.files.length, "files");
+        await presentTorrentMetadata(parsed, chatId);
+        return;
+      }
+    } catch (e) {
+      console.error("[scrape] Cache error:", e.message);
+    }
+    console.log("[scrape] Cache miss, falling back to DHT...");
+  }
+
+  // --- STRATEGY 2: webtorrent DHT (slow, may fail on restricted networks) ---
+  let settled = false;
   return new Promise((resolve) => {
     const client = new WebTorrent();
 
@@ -29,7 +125,7 @@ export async function scrapeMetadata(magnet, chatId) {
       try {
         await sendTelegram("sendMessage", {
           chat_id: chatId,
-          text: "Torrent resolution timed out. No active seeders found on DHT network."
+          text: "Torrent resolution timed out. No active seeders found on DHT network. The torrent may be dead or GitHub Actions network restricted peer discovery."
         });
       } catch (_) {}
       resolve();
@@ -42,33 +138,9 @@ export async function scrapeMetadata(magnet, chatId) {
         if (settled) { client.destroy(); return; }
 
         clearTimeout(timer);
+        console.log("[scrape] DHT resolved:", torrent.name, torrent.files.length, "files");
 
-        const files = torrent.files.map((f, idx) => ({
-          name: f.name,
-          length: f.length,
-          index: idx
-        }));
-
-        const inlineKeyboard = files.slice(0, 30).map((f) => [{
-          text: formatFileSize(f.length) + " \u2014 " + f.name,
-          callback_data: "STREAM:" + torrent.infoHash + ":" + f.index + ":pixeldrain"
-        }]);
-
-        if (files.length > 1) {
-          inlineKeyboard.push([{
-            text: "Build Full Playlist (M3U)",
-            callback_data: "BUILD_PLAYLIST:" + torrent.infoHash + ":pixeldrain"
-          }]);
-        }
-
-        await sendTelegram("sendMessage", {
-          chat_id: chatId,
-          text: "Found " + files.length + " file(s) in torrent:\n" +
-                "Name: " + torrent.name + "\n" +
-                "Size: " + formatFileSize(torrent.length) + "\n\n" +
-                "Select a file to stream:",
-          reply_markup: { inline_keyboard: inlineKeyboard }
-        });
+        await presentTorrentMetadata(torrent, chatId);
 
         settled = true;
         client.destroy();
@@ -107,10 +179,24 @@ export async function scrapeMetadata(magnet, chatId) {
 
 /**
  * Stream a specific file from a torrent directly to Pixeldrain (zero-disk).
+ * Tries torrent cache first for faster peer discovery, falls back to magnet.
  */
 export async function processStream(magnet, fileIndex, chatId, host = "pixeldrain") {
-  let settled = false;
+  const hash = extractHash(magnet);
 
+  // Try to get .torrent from cache for faster resolution
+  let torrentInput = magnet;
+  if (hash) {
+    try {
+      const buf = await fetchCachedTorrent(hash);
+      if (buf) {
+        console.log("[stream] Using cached .torrent for faster resolution");
+        torrentInput = buf;
+      }
+    } catch (_) {}
+  }
+
+  let settled = false;
   return new Promise((resolve) => {
     const client = new WebTorrent();
 
@@ -127,7 +213,7 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
       resolve();
     }, STREAM_TIMEOUT_MS);
 
-    client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+    client.add(torrentInput, { announce: getTrackers() }, async (torrent) => {
       if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));
@@ -148,7 +234,7 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
           text: "Streaming: " + file.name + "\nSize: " + formatFileSize(file.length) + "\n\nConnecting to peers..."
         });
 
-        // ZERO DISK: readStream -> HTTP PUT body
+        console.log("[stream] Starting upload:", file.name);
         const readStream = file.createReadStream();
         const directUrl = await streamToPixeldrain(readStream, file.name);
 
@@ -197,8 +283,21 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
  * Build an Extended M3U playlist by uploading all files sequentially from a single torrent.
  */
 export async function buildPlaylist(magnet, chatId) {
-  let settled = false;
+  const hash = extractHash(magnet);
 
+  // Try cache for faster start
+  let torrentInput = magnet;
+  if (hash) {
+    try {
+      const buf = await fetchCachedTorrent(hash);
+      if (buf) {
+        console.log("[playlist] Using cached .torrent");
+        torrentInput = buf;
+      }
+    } catch (_) {}
+  }
+
+  let settled = false;
   return new Promise((resolve) => {
     const client = new WebTorrent();
 
@@ -212,7 +311,7 @@ export async function buildPlaylist(magnet, chatId) {
       resolve();
     }, PLAYLIST_TIMEOUT_MS);
 
-    client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+    client.add(torrentInput, { announce: getTrackers() }, async (torrent) => {
       if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));

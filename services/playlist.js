@@ -4,6 +4,7 @@
 
 import { execSync } from "child_process";
 import { Readable } from "stream";
+import parseTorrent from "parse-torrent";
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./pixeldrain.js";
 
@@ -111,10 +112,32 @@ export async function processBatch(links, batchType, chatId) {
 }
 
 /**
- * Resolve a single magnet, stream the first (or only) file to Pixeldrain.
+ * Resolve a single magnet, stream the first (or only) video file to Pixeldrain.
+ * Tries torrent cache first for faster resolution on restricted networks.
  * Returns { name, url }.
  */
-function streamMagnetToPixeldrain(magnet, index, chatId) {
+async function streamMagnetToPixeldrain(magnet, index, chatId) {
+  const hash = (magnet.match(/btih:([A-Fa-f0-9]{40})/i) || [])[1];
+  let torrentInput = magnet;
+
+  // Try torrent cache first
+  if (hash) {
+    try {
+      for (const tpl of ["http://itorrents.org/torrent/{hash}.torrent"]) {
+        const url = tpl.replace("{hash}", hash);
+        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (buf.length > 0 && buf[0] === 0x64) {
+            console.log("[batch] Cache hit for item", index + 1);
+            torrentInput = buf;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
   return new Promise((resolve, reject) => {
     let settled = false;
     const client = new WebTorrent();
@@ -126,13 +149,12 @@ function streamMagnetToPixeldrain(magnet, index, chatId) {
       reject(new Error("Magnet [" + (index + 1) + "] timed out"));
     }, BATCH_ITEM_TIMEOUT_MS);
 
-    client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+    client.add(torrentInput, { announce: getTrackers() }, async (torrent) => {
       if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));
         if (settled) { client.destroy(); return; }
 
-        // Pick the largest video file, or first file
         const file = pickVideoFile(torrent.files) || torrent.files[0];
         if (!file) {
           clearTimeout(timer);

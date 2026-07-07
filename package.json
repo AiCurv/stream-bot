@@ -7,9 +7,10 @@
     "start": "node api/webhook.js"
   },
   "dependencies": {
-    "webtorrent": "^2.5.1",
     "axios": "^1.7.2",
     "form-data": "^4.0.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "parse-torrent": "^11.0.21",
+    "webtorrent": "^2.5.1"
   }
 }
