@@ -1,20 +1,45 @@
 // stream_engine.js — Zero-disk torrent streaming engine
 // Runs on GitHub Actions ubuntu-latest (Node.js v20)
 // Uses webtorrent to create in-memory read streams piped directly to Pixeldrain
-// Requires: TELEGRAM_BOT_TOKEN, PIXELDRAIN_API_KEY environment variables
+// 45-second metadata timeout with graceful exit (code 0)
 
 import WebTorrent from "webtorrent";
 import { streamToPixeldrain, getPixeldrainStreamUrl } from "./services/pixeldrain.js";
 
+const METADATA_TIMEOUT_MS = 45000;
+const STREAM_TIMEOUT_MS = 600000;
+const PLAYLIST_TIMEOUT_MS = 1800000;
+
 /**
  * Scrape metadata from a magnet/torrent and reply with an inline keyboard.
+ * 45-second hard timeout — notifies user gracefully on DHT failure, exits 0.
  */
 export async function scrapeMetadata(magnet, chatId) {
-  return new Promise((resolve, reject) => {
+  let settled = false;
+
+  return new Promise((resolve) => {
     const client = new WebTorrent();
+
+    const timer = setTimeout(async () => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      try {
+        await sendTelegram("sendMessage", {
+          chat_id: chatId,
+          text: "Torrent resolution timed out. No active seeders found on DHT network."
+        });
+      } catch (_) {}
+      resolve();
+    }, METADATA_TIMEOUT_MS);
+
     client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+      if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));
+        if (settled) { client.destroy(); return; }
+
+        clearTimeout(timer);
 
         const files = torrent.files.map((f, idx) => ({
           name: f.name,
@@ -23,7 +48,7 @@ export async function scrapeMetadata(magnet, chatId) {
         }));
 
         const inlineKeyboard = files.slice(0, 30).map((f) => [{
-          text: formatFileSize(f.length) + " — " + f.name,
+          text: formatFileSize(f.length) + " \u2014 " + f.name,
           callback_data: "STREAM:" + torrent.infoHash + ":" + f.index + ":pixeldrain"
         }]);
 
@@ -43,37 +68,77 @@ export async function scrapeMetadata(magnet, chatId) {
           reply_markup: { inline_keyboard: inlineKeyboard }
         });
 
+        settled = true;
         client.destroy();
         resolve();
       } catch (err) {
-        client.destroy();
-        reject(err);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          client.destroy();
+          try {
+            await sendTelegram("sendMessage", {
+              chat_id: chatId,
+              text: "Error reading torrent metadata: " + err.message
+            });
+          } catch (_) {}
+        }
+        resolve();
       }
     });
 
-    setTimeout(() => {
+    client.on("error", async (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       client.destroy();
-      reject(new Error("Metadata scrape timed out"));
-    }, 60000);
+      try {
+        await sendTelegram("sendMessage", {
+          chat_id: chatId,
+          text: "Torrent error: " + err.message
+        });
+      } catch (_) {}
+      resolve();
+    });
   });
 }
 
 /**
  * Stream a specific file from a torrent directly to Pixeldrain (zero-disk).
- * Creates a readStream from webtorrent and pipes it to the upload stream.
  */
 export async function processStream(magnet, fileIndex, chatId, host = "pixeldrain") {
-  return new Promise((resolve, reject) => {
+  let settled = false;
+
+  return new Promise((resolve) => {
     const client = new WebTorrent();
+
+    const timer = setTimeout(async () => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      try {
+        await sendTelegram("sendMessage", {
+          chat_id: chatId,
+          text: "Stream process timed out after 10 minutes."
+        });
+      } catch (_) {}
+      resolve();
+    }, STREAM_TIMEOUT_MS);
+
     client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+      if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));
+        if (settled) { client.destroy(); return; }
 
         const file = torrent.files[fileIndex];
         if (!file) {
-          await sendTelegram("sendMessage", { chat_id: chatId, text: "File index " + fileIndex + " not found." });
+          clearTimeout(timer);
+          settled = true;
           client.destroy();
-          return resolve();
+          await sendTelegram("sendMessage", { chat_id: chatId, text: "File index " + fileIndex + " not found." });
+          resolve();
+          return;
         }
 
         await sendTelegram("sendMessage", {
@@ -81,39 +146,75 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
           text: "Streaming: " + file.name + "\nSize: " + formatFileSize(file.length) + "\n\nConnecting to peers..."
         });
 
-        // ZERO DISK: readStream -> HTTP PUT body (never touches disk)
+        // ZERO DISK: readStream -> HTTP PUT body
         const readStream = file.createReadStream();
         const directUrl = await streamToPixeldrain(readStream, file.name);
+
+        clearTimeout(timer);
+        settled = true;
+        client.destroy();
 
         await sendTelegram("sendMessage", {
           chat_id: chatId,
           text: "Stream ready!\n\nFile: " + file.name + "\nDirect URL:\n" + directUrl + "\n\nStreaming URL (206 Partial Content):\n" + getPixeldrainStreamUrl(file.name)
         });
-
-        client.destroy();
         resolve();
       } catch (err) {
-        client.destroy();
-        reject(err);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          client.destroy();
+          try {
+            await sendTelegram("sendMessage", {
+              chat_id: chatId,
+              text: "Stream error: " + err.message
+            });
+          } catch (_) {}
+        }
+        resolve();
       }
     });
 
-    setTimeout(() => {
+    client.on("error", async (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       client.destroy();
-      reject(new Error("Stream process timed out"));
-    }, 600000);
+      try {
+        await sendTelegram("sendMessage", {
+          chat_id: chatId,
+          text: "Torrent stream error: " + err.message
+        });
+      } catch (_) {}
+      resolve();
+    });
   });
 }
 
 /**
- * Build an Extended M3U playlist by uploading all files sequentially.
+ * Build an Extended M3U playlist by uploading all files sequentially from a single torrent.
  */
 export async function buildPlaylist(magnet, chatId) {
-  return new Promise((resolve, reject) => {
+  let settled = false;
+
+  return new Promise((resolve) => {
     const client = new WebTorrent();
+
+    const timer = setTimeout(async () => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      try {
+        await sendTelegram("sendMessage", { chat_id: chatId, text: "Playlist build timed out." });
+      } catch (_) {}
+      resolve();
+    }, PLAYLIST_TIMEOUT_MS);
+
     client.add(magnet, { announce: getTrackers() }, async (torrent) => {
+      if (settled) { client.destroy(); return; }
       try {
         await new Promise((res) => torrent.once("ready", res));
+        if (settled) { client.destroy(); return; }
 
         const files = torrent.files;
         const urls = [];
@@ -124,55 +225,67 @@ export async function buildPlaylist(magnet, chatId) {
         });
 
         for (let i = 0; i < files.length; i++) {
+          if (settled) break;
           await sendTelegram("sendMessage", {
             chat_id: chatId,
             text: "Uploading [" + (i + 1) + "/" + files.length + "]: " + files[i].name
           });
-
-          // ZERO DISK per file: stream directly from torrent to Pixeldrain
           const readStream = files[i].createReadStream();
           const directUrl = await streamToPixeldrain(readStream, files[i].name);
           const streamUrl = getPixeldrainStreamUrl(files[i].name);
           urls.push({ name: files[i].name, url: streamUrl, length: files[i].length });
         }
 
-        // Format valid Extended M3U
+        if (settled) { client.destroy(); return; }
+
         let m3u = "#EXTM3U\n";
         for (const entry of urls) {
-          const duration = Math.ceil(entry.length / (1024 * 1024 * 5));
-          m3u += "#EXTINF:" + duration + "," + entry.name + "\n";
+          m3u += "#EXTINF:-1," + entry.name + "\n";
           m3u += entry.url + "\n";
         }
 
-        // Upload the M3U file itself
         const { Readable } = await import("stream");
         const m3uStream = Readable.from([m3u]);
         const playlistUrl = await streamToPixeldrain(m3uStream, torrent.name + ".m3u");
+
+        clearTimeout(timer);
+        settled = true;
+        client.destroy();
 
         await sendTelegram("sendMessage", {
           chat_id: chatId,
           text: "Playlist ready!\n\nTorrent: " + torrent.name + "\nFiles: " + urls.length + "\n\nM3U Playlist URL:\n" + playlistUrl
         });
-
-        client.destroy();
         resolve();
       } catch (err) {
-        client.destroy();
-        reject(err);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          client.destroy();
+          try {
+            await sendTelegram("sendMessage", { chat_id: chatId, text: "Playlist error: " + err.message });
+          } catch (_) {}
+        }
+        resolve();
       }
     });
 
-    setTimeout(() => {
+    client.on("error", async (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       client.destroy();
-      reject(new Error("Playlist build timed out"));
-    }, 1800000);
+      try {
+        await sendTelegram("sendMessage", { chat_id: chatId, text: "Playlist torrent error: " + err.message });
+      } catch (_) {}
+      resolve();
+    });
   });
 }
 
 // --- HELPERS ---
 
 async function sendTelegram(method, payload) {
-  // Exact string concatenation for Telegram API endpoint
   const url = "https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/" + method;
   const response = await fetch(url, {
     method: "POST",

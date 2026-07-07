@@ -5,6 +5,7 @@ on:
     types:
       - metadata_scrape
       - stream_process
+      - batch_process
 
 jobs:
   run:
@@ -36,8 +37,8 @@ jobs:
                 await mod.scrapeMetadata(p.magnet, p.chat_id);
               } catch(e) {
                 console.error(e);
-                process.exit(1);
               }
+              process.exit(0);
             });
           "
 
@@ -58,7 +59,25 @@ jobs:
                 }
               } catch(e) {
                 console.error(e);
-                process.exit(1);
               }
+              process.exit(0);
+            });
+          "
+
+      - name: Batch Process
+        if: github.event.action == 'batch_process'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+        run: |
+          node -e "
+            import('./services/playlist.js').then(async mod => {
+              const p = ${{ toJSON(github.event.client_payload) }};
+              try {
+                await mod.processBatch(p.links, p.batch_type, p.chat_id);
+              } catch(e) {
+                console.error(e);
+              }
+              process.exit(0);
             });
           "
