@@ -22,14 +22,12 @@ const TORRENT_CACHE_URLS = [
  * Extract infoHash from a magnet URI.
  */
 function extractHash(magnet) {
-  const match = magnet.match(/btih:([A-Fa-f0-9]{40})/i);
-  if (match) return match[1].toUpperCase();
-  // Try base32
-  const b32 = magnet.match(/btih:([A-Z2-7]+)/i);
-  if (b32) {
-    try { return parseTorrent.toHexHash(b32[1]); } catch (_) {}
-  }
-  return null;
+  const match = magnet.match(/btih:([A-Fa-f0-9]+)/i);
+  if (!match) return null;
+  const h = match[1].toUpperCase();
+  // Return as-is if 40 chars, otherwise try base32 decode
+  if (h.length === 40) return h;
+  try { return parseTorrent.toHexHash(h); } catch (_) { return h; }
 }
 
 /**
@@ -59,21 +57,35 @@ async function fetchCachedTorrent(hash) {
  * Parse a .torrent Buffer and send the file list to Telegram.
  */
 async function presentTorrentMetadata(parsed, chatId) {
-  const files = (parsed.files || []).map((f, idx) => ({
-    name: (f.path || []).join("/"),
-    length: f.length,
-    index: idx
-  }));
+  // parse-torrent: single-file has no .files array, multi-file has .files with .path arrays
+  let files;
+  if (parsed.files && parsed.files.length > 0) {
+    files = parsed.files.map((f, idx) => ({
+      name: Array.isArray(f.path) ? f.path.join("/") : (f.name || "file_" + idx),
+      length: f.length,
+      index: idx
+    }));
+  } else {
+    // Single-file torrent
+    files = [{
+      name: parsed.name || "unknown",
+      length: parsed.length || 0,
+      index: 0
+    }];
+  }
+
+  const totalSize = files.reduce((s, f) => s + f.length, 0);
+  const infoHash = parsed.infoHash;
 
   const inlineKeyboard = files.slice(0, 30).map((f) => [{
     text: formatFileSize(f.length) + " \u2014 " + f.name,
-    callback_data: "STREAM:" + parsed.infoHash + ":" + f.index + ":pixeldrain"
+    callback_data: "STREAM:" + infoHash + ":" + f.index + ":pixeldrain"
   }]);
 
   if (files.length > 1) {
     inlineKeyboard.push([{
       text: "Build Full Playlist (M3U)",
-      callback_data: "BUILD_PLAYLIST:" + parsed.infoHash + ":pixeldrain"
+      callback_data: "BUILD_PLAYLIST:" + infoHash + ":pixeldrain"
     }]);
   }
 
@@ -81,12 +93,12 @@ async function presentTorrentMetadata(parsed, chatId) {
     chat_id: chatId,
     text: "Found " + files.length + " file(s) in torrent:\n" +
           "Name: " + (parsed.name || "Unknown") + "\n" +
-          "Size: " + formatFileSize(parsed.length) + "\n\n" +
+          "Size: " + formatFileSize(totalSize) + "\n\n" +
           "Select a file to stream:",
     reply_markup: { inline_keyboard: inlineKeyboard }
   });
 
-  return { infoHash: parsed.infoHash, files };
+  return { infoHash, files };
 }
 
 /**
