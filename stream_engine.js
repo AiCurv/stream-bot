@@ -138,10 +138,13 @@ async function fetchCachedTorrent(hash) {
   for (const tpl of TORRENT_CACHE_URLS) {
     try {
       const url = tpl.replace("{hash}", hash);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
       const resp = await fetch(url, {
         redirect: "follow",
-        signal: AbortSignal.timeout(10000)
+        signal: controller.signal
       });
+      clearTimeout(timer);
       if (resp.ok) {
         const buf = Buffer.from(await resp.arrayBuffer());
         if (buf.length > 0 && buf[0] === 0x64) { // bencode starts with 'd'
@@ -306,11 +309,15 @@ export async function processStream(magnet, fileIndex, chatId, host = "pixeldrai
     try {
       for (const tpl of TORRENT_CACHE_URLS) {
         const url = tpl.replace("{hash}", hash);
-        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
-        if (resp.ok) {
-          const buf = Buffer.from(await resp.arrayBuffer());
-          if (buf.length > 0 && buf[0] === 0x64) {
-            console.log("[stream] Using cached .torrent");
+        const ac = new AbortController();
+        const tm = setTimeout(() => ac.abort(), 10000);
+        try {
+          const resp = await fetch(url, { redirect: "follow", signal: ac.signal });
+          clearTimeout(tm);
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer());
+            if (buf.length > 0 && buf[0] === 0x64) {
+              console.log("[stream] Using cached .torrent");
             torrentInput = buf;
             break;
           }
@@ -414,11 +421,15 @@ export async function buildPlaylist(magnet, chatId) {
     try {
       for (const tpl of TORRENT_CACHE_URLS) {
         const url = tpl.replace("{hash}", hash);
-        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
-        if (resp.ok) {
-          const buf = Buffer.from(await resp.arrayBuffer());
-          if (buf.length > 0 && buf[0] === 0x64) {
-            console.log("[playlist] Using cached .torrent");
+        const ac = new AbortController();
+        const tm = setTimeout(() => ac.abort(), 10000);
+        try {
+          const resp = await fetch(url, { redirect: "follow", signal: ac.signal });
+          clearTimeout(tm);
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer());
+            if (buf.length > 0 && buf[0] === 0x64) {
+              console.log("[playlist] Using cached .torrent");
             torrentInput = buf;
             break;
           }

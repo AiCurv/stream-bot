@@ -125,13 +125,20 @@ async function streamMagnetToPixeldrain(magnet, index, chatId) {
     try {
       for (const tpl of ["http://itorrents.org/torrent/{hash}.torrent"]) {
         const url = tpl.replace("{hash}", hash);
-        const resp = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10000) });
-        if (resp.ok) {
-          const buf = Buffer.from(await resp.arrayBuffer());
-          if (buf.length > 0 && buf[0] === 0x64) {
-            console.log("[batch] Cache hit for item", index + 1);
-            torrentInput = buf;
-            break;
+        const ac = new AbortController();
+        const tm = setTimeout(() => ac.abort(), 10000);
+        try {
+          const resp = await fetch(url, { redirect: "follow", signal: ac.signal });
+          clearTimeout(tm);
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer());
+            if (buf.length > 0 && buf[0] === 0x64) {
+              console.log("[batch] Cache hit for item", index + 1);
+              torrentInput = buf;
+              break;
+            }
+          }
+        } catch (_) {}
           }
         }
       }
